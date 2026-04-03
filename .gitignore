@@ -1,0 +1,35 @@
+# Ignore environment variables (IMPORTANT - protects your API key)
+.env
+backend/.env
+*.env
+
+# Python cache and temporary files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Hugging Face model cache (very large folder)
+.cache/
+huggingface/
