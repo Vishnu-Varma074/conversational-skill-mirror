@@ -5,3 +5,4 @@ groq==0.15.*
 python-dotenv==1.0.*
 pydub==0.25.*
 python-multipart==0.0.*
+requests
