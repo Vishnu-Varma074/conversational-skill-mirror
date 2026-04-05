@@ -45,7 +45,7 @@ app.add_middleware(
 
 # ====================== LOAD WHISPER MODEL ======================
 print("Loading faster-whisper 'small' model... (first time may take 15-30 seconds)")
-model = WhisperModel("small", device="cpu", compute_type="int8")   # Change to "cuda" if you have GPU
+model = WhisperModel("tiny", device="cpu", compute_type="int8")   # Change to "cuda" if you have GPU
 print("✅ Whisper model loaded successfully!")
 
 groq_client = Groq(api_key=api_key)
