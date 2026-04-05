@@ -11,27 +11,16 @@ import json
 # ====================== LOAD ENVIRONMENT VARIABLES ======================
 load_dotenv()
 
-# ====================== API KEY VALIDATION ======================
 api_key = os.getenv("GROQ_API_KEY")
 if not api_key or api_key.strip() == "":
-    raise ValueError("""
-    ❌ ERROR: GROQ_API_KEY is missing or empty!
-
-    Please create a file named .env in the 'backend' folder with this exact line:
-    GROQ_API_KEY=gsk_your_actual_key_here
-
-    Tips:
-    - Use Notepad → Save As → All Files → File name: ".env" (include quotes while saving)
-    - Do not add quotes around the key
-    - Restart the backend after creating .env
-    """)
+    raise ValueError("GROQ_API_KEY is missing. Please add it in .env file.")
 
 print("✅ GROQ_API_KEY loaded successfully!")
 
 # ====================== INITIALIZE FASTAPI ======================
 app = FastAPI(
     title="Conversational Skill Mirror API",
-    description="Backend API for Interview & Public Speaking Coach using GenAI + NLP",
+    description="Interview & Public Speaking Coach",
     version="1.0.0"
 )
 
@@ -43,70 +32,82 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ====================== LOAD WHISPER MODEL ======================
-print("Loading faster-whisper 'small' model... (first time may take 15-30 seconds)")
-model = WhisperModel("tiny", device="cpu", compute_type="int8")   # Change to "cuda" if you have GPU
-print("✅ Whisper model loaded successfully!")
+# ====================== CACHED WHISPER MODEL ======================
+# Model is loaded only once when the backend starts (caching)
+print("Loading Whisper 'tiny' model... (this may take 10-20 seconds)")
+
+whisper_model = None
+
+@app.on_event("startup")
+async def load_model():
+    global whisper_model
+    try:
+        whisper_model = WhisperModel(
+            "tiny", 
+            device="cpu", 
+            compute_type="int8"
+        )
+        print("✅ Whisper 'tiny' model loaded successfully and cached!")
+    except Exception as e:
+        print(f"❌ Failed to load Whisper model: {e}")
+        raise
 
 groq_client = Groq(api_key=api_key)
 
-# ====================== SYSTEM PROMPT FOR ANALYSIS ======================
+# ====================== SYSTEM PROMPT ======================
 SYSTEM_PROMPT = """
-You are an expert communication coach specializing in Indian English, Hinglish, and non-native speakers (Hyderabad/Telangana context).
-Analyze the spoken response carefully and return ONLY valid JSON with this exact structure:
+You are an expert communication coach. Analyze the transcript and return ONLY valid JSON:
 
 {
   "filler_count": integer,
-  "fillers": ["list of filler words"],
+  "fillers": ["list of fillers"],
   "pace_wpm": integer,
-  "clarity_score": integer,           // 1-10
+  "clarity_score": integer,
   "bias_detected": ["list or empty"],
-  "topic_coverage": integer,          // 1-10
-  "cultural_nuance_feedback": "string (1-2 sentences)",
+  "topic_coverage": integer,
+  "cultural_nuance_feedback": "string",
   "strengths": ["bullet points"],
   "improvement_areas": ["bullet points"],
-  "improved_response": "full polished, confident, professional rephrased answer",
-  "confidence_boosting_tips": ["3-4 actionable tips"],
-  "role_play_continuation": "suggested next interviewer question + ideal reply"
+  "improved_response": "full polished response",
+  "confidence_boosting_tips": ["tips"],
+  "role_play_continuation": "next question suggestion"
 }
 """
 
-# ====================== MAIN ANALYZE ENDPOINT ======================
-@app.post("/analyze",
-          summary="Analyze Audio for Interview/Public Speaking",
-          description="Receives audio recording from Streamlit frontend and returns detailed feedback using Whisper + Groq.")
+# ====================== ANALYZE ENDPOINT ======================
+@app.post("/analyze")
 async def analyze_audio(
-    file: UploadFile = File(..., description="Audio file recorded from microphone (supports wav, mp3, m4a, webm up to 4 minutes)"),
+    file: UploadFile = File(...),
     question: str = ""
 ):
-    """
-    This endpoint is called by the Streamlit frontend.
-    """
-    if not file.filename.lower().endswith((".wav", ".mp3", ".m4a", ".webm")):
-        raise HTTPException(status_code=400, detail="Only audio files (wav, mp3, m4a, webm) are supported.")
+    if whisper_model is None:
+        raise HTTPException(status_code=500, detail="Whisper model not loaded yet. Please try again later.")
 
-    # Save uploaded audio temporarily
+    if not file.filename.lower().endswith((".wav", ".mp3", ".m4a", ".webm")):
+        raise HTTPException(status_code=400, detail="Only audio files are supported.")
+
+    # Save uploaded file temporarily
     with tempfile.NamedTemporaryFile(delete=False, suffix=Path(file.filename).suffix) as tmp:
         tmp.write(await file.read())
         tmp_path = tmp.name
 
     try:
-        # 1. Transcribe audio using faster-whisper
-        segments, info = model.transcribe(
+        # Use cached model
+        segments, info = whisper_model.transcribe(
             tmp_path,
             beam_size=5,
-            language=None,                    # auto-detect language
+            language=None,
             condition_on_previous_text=False
         )
-        
+
         transcript = " ".join(segment.text for segment in segments).strip()
 
         if not transcript or len(transcript) < 5:
-            return {"error": "No clear speech detected. Please speak louder and clearly."}
+            return {"error": "No clear speech detected. Please speak clearly."}
 
-        # 2. Send to Groq for intelligent analysis
+        # Groq Analysis
         user_prompt = f"""
-        Question / Topic: {question or "General interview or public speaking response"}
+        Question: {question or "General interview or public speaking response"}
         Transcript: {transcript}
         """
 
@@ -117,7 +118,7 @@ async def analyze_audio(
                 {"role": "user", "content": user_prompt}
             ],
             temperature=0.3,
-            max_tokens=2000,
+            max_tokens=1500,
             response_format={"type": "json_object"}
         )
 
@@ -133,23 +134,12 @@ async def analyze_audio(
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
     
     finally:
-        # Cleanup temporary file
+        # Cleanup
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
 
 
-# ====================== HEALTH CHECK ENDPOINT ======================
+# Health Check
 @app.get("/")
 async def root():
-    return {
-        "message": "Conversational Skill Mirror Backend is running successfully! 🎉",
-        "status": "healthy",
-        "version": "1.0.0"
-    }
-
-
-# ====================== RUN INSTRUCTIONS ======================
-if __name__ == "__main__":
-    print("\n🚀 Backend is ready!")
-    print("Streamlit frontend can now connect to this backend.")
-    print("Test the API at: http://127.0.0.1:8000/docs")
+    return {"message": "Conversational Skill Mirror Backend is running! 🎉", "status": "healthy"}
