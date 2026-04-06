@@ -8,21 +8,15 @@ from groq import Groq
 from dotenv import load_dotenv
 import json
 
-# ====================== LOAD ENVIRONMENT VARIABLES ======================
 load_dotenv()
 
 api_key = os.getenv("GROQ_API_KEY")
 if not api_key or api_key.strip() == "":
-    raise ValueError("GROQ_API_KEY is missing. Please add it in .env file.")
+    raise ValueError("❌ GROQ_API_KEY is missing. Please add it in .env file.")
 
 print("✅ GROQ_API_KEY loaded successfully!")
 
-# ====================== INITIALIZE FASTAPI ======================
-app = FastAPI(
-    title="Conversational Skill Mirror API",
-    description="Interview & Public Speaking Coach",
-    version="1.0.0"
-)
+app = FastAPI(title="Conversational Skill Mirror API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -33,44 +27,43 @@ app.add_middleware(
 )
 
 # ====================== CACHED WHISPER MODEL ======================
-# Model is loaded only once when the backend starts (caching)
-print("Loading Whisper 'tiny' model... (this may take 10-20 seconds)")
-
 whisper_model = None
 
 @app.on_event("startup")
 async def load_model():
     global whisper_model
     try:
+        # Optimized settings for speed + lower memory
         whisper_model = WhisperModel(
-            "tiny", 
-            device="cpu", 
-            compute_type="int8"
+            "tiny",
+            device="cpu",
+            compute_type="int8",
+            download_root="/opt/render/project/src/model_cache"  # Helps with Render
         )
-        print("✅ Whisper 'tiny' model loaded successfully and cached!")
+        print("✅ Whisper 'tiny' model loaded and cached successfully!")
     except Exception as e:
-        print(f"❌ Failed to load Whisper model: {e}")
+        print(f"❌ Model loading failed: {e}")
         raise
 
 groq_client = Groq(api_key=api_key)
 
 # ====================== SYSTEM PROMPT ======================
 SYSTEM_PROMPT = """
-You are an expert communication coach. Analyze the transcript and return ONLY valid JSON:
+You are an expert communication coach. Analyze the transcript and return ONLY valid JSON with this structure:
 
 {
   "filler_count": integer,
-  "fillers": ["list of fillers"],
+  "fillers": ["list"],
   "pace_wpm": integer,
   "clarity_score": integer,
   "bias_detected": ["list or empty"],
   "topic_coverage": integer,
   "cultural_nuance_feedback": "string",
-  "strengths": ["bullet points"],
-  "improvement_areas": ["bullet points"],
-  "improved_response": "full polished response",
+  "strengths": ["points"],
+  "improvement_areas": ["points"],
+  "improved_response": "polished response",
   "confidence_boosting_tips": ["tips"],
-  "role_play_continuation": "next question suggestion"
+  "role_play_continuation": "next question"
 }
 """
 
@@ -81,23 +74,23 @@ async def analyze_audio(
     question: str = ""
 ):
     if whisper_model is None:
-        raise HTTPException(status_code=500, detail="Whisper model not loaded yet. Please try again later.")
+        raise HTTPException(status_code=500, detail="Model not loaded. Please wait and try again.")
 
     if not file.filename.lower().endswith((".wav", ".mp3", ".m4a", ".webm")):
-        raise HTTPException(status_code=400, detail="Only audio files are supported.")
+        raise HTTPException(status_code=400, detail="Only audio files supported.")
 
-    # Save uploaded file temporarily
     with tempfile.NamedTemporaryFile(delete=False, suffix=Path(file.filename).suffix) as tmp:
         tmp.write(await file.read())
         tmp_path = tmp.name
 
     try:
-        # Use cached model
+        # Optimized transcription settings for speed
         segments, info = whisper_model.transcribe(
             tmp_path,
-            beam_size=5,
+            beam_size=3,                    # Reduced for speed
             language=None,
-            condition_on_previous_text=False
+            condition_on_previous_text=False,
+            vad_filter=True                 # Helps filter silence
         )
 
         transcript = " ".join(segment.text for segment in segments).strip()
@@ -105,9 +98,8 @@ async def analyze_audio(
         if not transcript or len(transcript) < 5:
             return {"error": "No clear speech detected. Please speak clearly."}
 
-        # Groq Analysis
         user_prompt = f"""
-        Question: {question or "General interview or public speaking response"}
+        Question: {question or "General response"}
         Transcript: {transcript}
         """
 
@@ -118,7 +110,7 @@ async def analyze_audio(
                 {"role": "user", "content": user_prompt}
             ],
             temperature=0.3,
-            max_tokens=1500,
+            max_tokens=1200,
             response_format={"type": "json_object"}
         )
 
@@ -134,12 +126,10 @@ async def analyze_audio(
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
     
     finally:
-        # Cleanup
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
 
 
-# Health Check
 @app.get("/")
 async def root():
     return {"message": "Conversational Skill Mirror Backend is running! 🎉", "status": "healthy"}
